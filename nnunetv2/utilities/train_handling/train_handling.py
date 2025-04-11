@@ -17,19 +17,29 @@ __email__ = ["riccardo.biondi7@unibo.it"]
 
 class TrainConfigurationManager(object):
     """
-    Facility class that taken the configuration dictionary takes the responmsability to
-    correctly initialize all the classes and parameters for the specific training 
-    configuration.
+    Responsible for initializing and managing all parameters and classes required 
+    for a specific training configuration. Takes in a configuration dictionary 
+    (typically from a JSON file) and exposes relevant training parameters as properties.
+
+    This includes setup of:
+        - Learning rate
+        - Weight decay
+        - Epochs
+        - Loss functions
+        - Foreground oversampling
+        - Probabilistic sampling
+        - Iterations per epoch
+        - Deep supervision
     """
 
     def __init__(self, configuration_dict: dict):
         """
-        Initializer of the specific train configuration .
-        
+        Initializes training configuration from a dictionary.
+
         Parameters
         ----------
-        configuration_dict: dict
-            Dictionary that contains the full configuration retrieved from the .json file
+        configuration_dict : dict
+            Dictionary containing configuration keys and values, typically loaded from a JSON file.
         """
         self._configuration = configuration_dict
 
@@ -43,41 +53,36 @@ class TrainConfigurationManager(object):
         self._num_val_iterations_per_epoch = configuration_dict["num_val_iterations_per_epoch"] if "num_val_iterations_per_epoch" in keys else 50
         self._num_epochs = configuration_dict["num_epochs"] if "num_epochs" in keys else 1000
         self._enable_deep_supervision = configuration_dict["enable_deep_supervision"] if "enable_deep_supervision" in keys else True
-        self._loss = None # TODO Add here the default loss initialization, so the loss initializer do not need to provide the dummy initialization. Maybe it is a good idea
-
-        _ = self._loss_initializer()
+        self._loss = self._loss_initializer()
 
         # TODO Add optimizer initializer
         # TODO Add lr scheduler initializer
 
-    def _loss_initializer(self) -> NoReturn:
+    def _loss_initializer(self) -> LossWrapper:
         """
-        Initialize the loss for the given confuguration.
-        Each loss class should be implemented in nnunetv2..trainin.loss
+        Initializes the loss function(s) specified in the configuration.
+        If no custom loss is specified, falls back to the default Dice + BCE loss.
+        All losses are wrapped into a `LossWrapper`.
 
-        Finally, each loss is wrapped using the LossWrapper class.
-
-        This function initilize the loss property of  this class.
-        If no loss is provided in the configuration, then a Dice Loss + BCE loss is returned (Default loss of nnUNet)
+        Return
+        ------
+        Loss: LossWrapper
+            A wrapper combining all the specified losses.
         """
 
         if "losses" not in self._configuration.keys():
             return # here add the return of the default loss for nnUNet
         
-        loss_names = self._configuration["losses"].keys()
         losses = [] # list of all the losses specified in the configuration file
-        weigths = [] # list of all the weights for each specified loss 
-        for loss_name in loss_names:
-            
-            loss_class = recursive_find_python_class(join(nnunetv2.__path__[0], "training", "loss"), loss_name, current_module="nnunetv2.training.loss")
+        weigths = [] # list of all the weights for each specified loss
+        loss_kwargs = [] # list of all the kyword arguments for each loss
+        for loss_name in self._configuration["losses"].keys():
+            # Here init the lists of loss and parameters to provide to the LossWrapper class 
+            losses.append(recursive_find_python_class(join(nnunetv2.__path__[0], "training", "loss"), loss_name, current_module="nnunetv2.training.loss"))
+            weigths.append(self._configuration["losses"][loss_name]["weight"] if "weight" in self._configuration["losses"][loss_name].keys() else 1.)
+            loss_kwargs.append(self._configuration["losses"][loss_name]["kwargs"] if "kwargs" in self._configuration["losses"][loss_name].keys() else {})
 
-            loss_kwargs = self._configuration["losses"][loss_name]["kwargs"] if "kwargs" in self._configuration["losses"][loss_name].keys() else {}
-            loss_weight = self._configuration["losses"][loss_name]["weight"] if "weight" in self._configuration["losses"][loss_name].keys() else 1.
-
-            losses.append(loss_class(**loss_kwargs))
-            weigths.append(loss_weight)
-
-        self._loss = LossWrapper(losses=losses, weights=weigths)
+        return LossWrapper(losses=losses, weights=weigths, loss_kwargs=loss_kwargs)
 
     @property
     def num_epochs(self) -> int:

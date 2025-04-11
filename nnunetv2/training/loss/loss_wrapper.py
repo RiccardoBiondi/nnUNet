@@ -14,7 +14,7 @@ class LossWrapper(nn.Module):
     There is no weight scheduler, therefore the weight is constant across the whole training.
     """
 
-    def __init__(self, losses: list, weights: list):
+    def __init__(self, losses: List[nn.Module], loss_kwargs: List[dict], weights: List[float]):
         """
         LossWrapper initializer. It will take the responsability to check if the 
         losses are actual loss (i.e. subclasses of nn.Module), the weights are actual weights (i.e. float or int)
@@ -31,9 +31,10 @@ class LossWrapper(nn.Module):
         super(LossWrapper, self).__init__()
 
         assert len(losses) == len(weights)
+        assert len(loss_kwargs) == len(losses)
 
         # TODO: add a sanity check on the weights and loss types.
-        self.losses = losses
+        self.losses = [loss(**kwargs) for loss, kwargs in zip(losses, loss_kwargs)]
         self.weights = weights
 
     def forward(self, x, y, loss_mask=None):
