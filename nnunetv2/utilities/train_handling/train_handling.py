@@ -2,12 +2,14 @@
 """
 import os
 import logging
+from torch import nn
 from copy import deepcopy
 from batchgenerators.utilities.file_and_folder_operations import load_json, join
-from typing import Union, Tuple, List, Type, Callable
+from typing import Union, Tuple, List, Type, Callable, NoReturn
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
 from functools import lru_cache
 import nnunetv2
+from nnunetv2.training.loss.loss_wrapper import LossWrapper
 
 from nnunetv2.training.logging.base_logger import Logger
 __author__ = ["Riccardo Biondi"]
@@ -29,7 +31,6 @@ class TrainConfigurationManager(object):
         configuration_dict: dict
             Dictionary that contains the full configuration retrieved from the .json file
         """
-        
         self._configuration = configuration_dict
 
         keys = configuration_dict.keys() # list of available configuration parameters
@@ -42,11 +43,41 @@ class TrainConfigurationManager(object):
         self._num_val_iterations_per_epoch = configuration_dict["num_val_iterations_per_epoch"] if "num_val_iterations_per_epoch" in keys else 50
         self._num_epochs = configuration_dict["num_epochs"] if "num_epochs" in keys else 1000
         self._enable_deep_supervision = configuration_dict["enable_deep_supervision"] if "enable_deep_supervision" in keys else True
+        self._loss = None # TODO Add here the default loss initialization, so the loss initializer do not need to provide the dummy initialization. Maybe it is a good idea
 
+        _ = self._loss_initializer()
 
-        # TODO Add loss initializer
         # TODO Add optimizer initializer
         # TODO Add lr scheduler initializer
+
+    def _loss_initializer(self) -> NoReturn:
+        """
+        Initialize the loss for the given confuguration.
+        Each loss class should be implemented in nnunetv2..trainin.loss
+
+        Finally, each loss is wrapped using the LossWrapper class.
+
+        This function initilize the loss property of  this class.
+        If no loss is provided in the configuration, then a Dice Loss + BCE loss is returned (Default loss of nnUNet)
+        """
+
+        if "losses" not in self._configuration.keys():
+            return # here add the return of the default loss for nnUNet
+        
+        loss_names = self._configuration["losses"].keys()
+        losses = [] # list of all the losses specified in the configuration file
+        weigths = [] # list of all the weights for each specified loss 
+        for loss_name in loss_names:
+            
+            loss_class = recursive_find_python_class(join(nnunetv2.__path__[0], "training", "loss"), loss_name, current_module="nnunetv2.training.loss")
+
+            loss_kwargs = self._configuration["losses"][loss_name]["kwargs"] if "kwargs" in self._configuration["losses"][loss_name].keys() else {}
+            loss_weight = self._configuration["losses"][loss_name]["weight"] if "weight" in self._configuration["losses"][loss_name].keys() else 1.
+
+            losses.append(loss_class(**loss_kwargs))
+            weigths.append(loss_weight)
+
+        self._loss = LossWrapper(losses=losses, weights=weigths)
 
     @property
     def num_epochs(self) -> int:
@@ -55,26 +86,31 @@ class TrainConfigurationManager(object):
     @property
     def initial_lr(self) -> float:
         return self._initial_lr
-    
+
     @property
     def weight_decay(self) -> float:
         return self._weight_decay
-    
+
     @property
     def oversample_foreground_percent(self) -> float:
         return self._oversample_foreground_percent
-    
+
     @property
     def probabilistic_oversampling(self) -> float:
         return self._probabilistic_oversampling
-    
+
     @property
     def num_iterations_per_epoch(self) -> int:
         return self._num_iterations_per_epoch
-    
+
     @property
     def num_val_iterations_per_epoch(self) -> int:
         return self._num_val_iterations_per_epoch
+
+    @property
+    def loss(self) -> nn.Module:
+        return self._loss
+
 
 
 class TrainPlansManager(object):
@@ -108,9 +144,6 @@ class TrainPlansManager(object):
         # its not strictly a train parameter)
         _ = self._init_logger()
 
-
-
-
     def __repr__(self):
         return self.plans.__repr__()
     
@@ -133,7 +166,7 @@ class TrainPlansManager(object):
             self._logger = recursive_find_python_class(join(nnunetv2.__path__[0], "training", "logging"),
                 "nnUNetLogger",
                 current_module="nnunetv2.training.logging")
-    
+
     def _internal_resolve_configuration_inheritance(self, configuration_name: str,
                                                     visited: Tuple[str, ...] = None) -> dict:
         """
@@ -168,7 +201,7 @@ class TrainPlansManager(object):
                                 f"Available configurations: {list(self.plans['configurations'].keys())}")
 
         configuration_dict = self._internal_resolve_configuration_inheritance(configuration_name)
-        
+
         return TrainConfigurationManager(configuration_dict)
     
     @property
@@ -177,5 +210,4 @@ class TrainPlansManager(object):
 
     @property
     def logger(self) -> Logger:
-        
         return self._logger
