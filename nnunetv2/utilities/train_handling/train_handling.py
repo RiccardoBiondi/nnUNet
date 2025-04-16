@@ -71,7 +71,7 @@ class TrainConfigurationManager(object):
         """
 
         if "losses" not in self._configuration.keys():
-            return # here add the return of the default loss for nnUNet
+            return None
         
         losses = [] # list of all the losses specified in the configuration file
         weigths = [] # list of all the weights for each specified loss
@@ -111,7 +111,10 @@ class TrainConfigurationManager(object):
     @property
     def num_val_iterations_per_epoch(self) -> int:
         return self._num_val_iterations_per_epoch
-
+    
+    @property
+    def enable_deep_supervision(self) -> bool:
+        return self._enable_deep_supervision
     @property
     def loss(self) -> nn.Module:
         return self._loss
