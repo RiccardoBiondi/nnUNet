@@ -70,10 +70,19 @@ from nnunetv2.training.nnUNetTrainer.nnUNetTrainer import nnUNetTrainer
 from nnunetv2.utilities.find_class_by_name import recursive_find_python_class
 import nnunetv2
 
+# here the import of the additional manager for the training phase:
+from nnunetv2.utilities.train_handling.train_handling import TrainPlansManager
+from nnunetv2.paths import nnUNet_preprocessed
+from nnunetv2.utilities.dataset_name_id_conversion import maybe_convert_to_dataset_name
+
+
+__author__ = ["Riccardo Biondi"]
+__email__ = ["riccardo.biondi7@unibo.it"]
+
 
 class nnUNetTrainerAdaptive(nnUNetTrainer):
     def __init__(self, plans: dict, configuration: str, fold: int, dataset_json: dict,
-                 device: torch.device = torch.device('cuda')):
+                device: torch.device = torch.device('cuda')):
         # From https://grugbrain.dev/. Worth a read ya big brains ;-)
 
         # apex predator of grug is complexity
@@ -125,6 +134,12 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
         self.dataset_json = dataset_json
         self.fold = fold
 
+        # here read the train configuration and initialize the train configuration manager
+        # so, from the initialized object, all the configuration parameters could be retrieved.
+        fname = plans["train_configs_filename"]
+        self.training_manager = TrainPlansManager(os.path.join(nnUNet_preprocessed,  maybe_convert_to_dataset_name(plans["dataset_name"]),f"{fname}.json"))
+        self.train_configuration = self.training_manager.get_configuration(plans["train_config_to_use"])
+
         ### Setting all the folder names. We need to make sure things don't crash in case we are just running
         # inference and some of the folders may not be defined!
         self.preprocessed_dataset_folder_base = join(nnUNet_preprocessed, self.plans_manager.dataset_name) \
@@ -149,15 +164,17 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
                 if self.is_cascaded else None
 
         ### Some hyperparameters for you to fiddle with
-        self.initial_lr = 1e-2
-        self.weight_decay = 3e-5
-        self.oversample_foreground_percent = 0.33
-        self.probabilistic_oversampling = False
-        self.num_iterations_per_epoch = 250
-        self.num_val_iterations_per_epoch = 50
-        self.num_epochs = 1000
+        self.initial_lr = self.train_configuration.initial_lr
+        self.weight_decay = self.train_configuration.weight_decay 
+        self.oversample_foreground_percent = self.train_configuration.oversample_foreground_percent
+        self.probabilistic_oversampling = self.train_configuration.probabilistic_oversampling
+        self.num_iterations_per_epoch = self.train_configuration.num_iterations_per_epoch
+        self.num_val_iterations_per_epoch = self.train_configuration.num_val_iterations_per_epoch
+        self.num_epochs = self.train_configuration.num_epochs
         self.current_epoch = 0
-        self.enable_deep_supervision = True
+        self.enable_deep_supervision = self.train_configuration.enable_deep_supervision
+
+        # TODO add here the logging initialization
 
         ### Dealing with labels/regions
         self.label_manager = self.plans_manager.get_label_manager(dataset_json)
@@ -179,6 +196,9 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
                              (timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute,
                               timestamp.second))
         _ = self._init_logger()
+
+        # log the training configuration hyperparams
+
 
         ### placeholders
         self.dataloader_train = self.dataloader_val = None  # see on_train_start
@@ -231,15 +251,26 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
             if self.is_ddp:
                 self.network = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self.network)
                 self.network = DDP(self.network, device_ids=[self.local_rank])
-
             self.loss = self._build_loss()
 
             self.dataset_class = infer_dataset_class(self.preprocessed_dataset_folder)
 
             # torch 2.2.2 crashes upon compiling CE loss
-            # if self._do_i_compile():
             #     self.loss = torch.compile(self.loss)
+            # if self._do_i_compile():
             self.was_initialized = True
+
+            self.logger.log_hyperparams(
+            {
+                "configuration name": self.configuration_name,
+                "epochs": self.num_epochs,
+                "val_iteration_per_epoch": self.num_val_iterations_per_epoch,
+                "deep_supervision": self.enable_deep_supervision,
+                "num iterations per epoch": self.num_iterations_per_epoch,
+                "weight decay": self.weight_decay,
+                "oversample foreground percent": self.oversample_foreground_percent
+            }
+        )
         else:
             raise RuntimeError("You have called self.initialize even though the trainer was already initialized. "
                                "That should not happen.")
@@ -396,19 +427,32 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
             self.oversample_foreground_percent = oversample_percent
 
     def _build_loss(self):
-        if self.label_manager.has_regions:
-            loss = DC_and_BCE_loss({},
-                                   {'batch_dice': self.configuration_manager.batch_dice,
-                                    'do_bg': True, 'smooth': 1e-5, 'ddp': self.is_ddp},
-                                   use_ignore_label=self.label_manager.ignore_label is not None,
-                                   dice_class=MemoryEfficientSoftDiceLoss)
-        else:
-            loss = DC_and_CE_loss({'batch_dice': self.configuration_manager.batch_dice,
-                                   'smooth': 1e-5, 'do_bg': False, 'ddp': self.is_ddp}, {}, weight_ce=1, weight_dice=1,
-                                  ignore_label=self.label_manager.ignore_label, dice_class=MemoryEfficientSoftDiceLoss)
 
-        if self._do_i_compile():
-            loss.dc = torch.compile(loss.dc)
+        # TODO this part should be substituted by the retrieved from the TrainConfigurationManager.
+        # 
+
+        loss = self.train_configuration.loss
+
+        if loss is None:
+            if self.label_manager.has_regions:
+                loss = DC_and_BCE_loss({},
+                                    {'batch_dice': self.configuration_manager.batch_dice,
+                                        'do_bg': True, 'smooth': 1e-5, 'ddp': self.is_ddp},
+                                    use_ignore_label=self.label_manager.ignore_label is not None,
+                                    dice_class=MemoryEfficientSoftDiceLoss)
+            else:
+                loss = DC_and_CE_loss({'batch_dice': self.configuration_manager.batch_dice,
+                                    'smooth': 1e-5, 'do_bg': False, 'ddp': self.is_ddp}, {}, weight_ce=1, weight_dice=1,
+                                    ignore_label=self.label_manager.ignore_label, dice_class=MemoryEfficientSoftDiceLoss)
+
+            if self._do_i_compile():
+                loss.dc = torch.compile(loss.dc)
+        else:
+            if self._do_i_compile():
+                for i, loss_element in enumerate(loss.losses):
+                    loss.losses[i] = torch.compile(loss_element)
+
+        # Now the normal flow, the nnUNet default one.
 
         # we give each output a weight which decreases exponentially (division by 2) as the resolution decreases
         # this gives higher resolution outputs more weight in the loss
@@ -432,7 +476,9 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
         return loss
 
     def _init_logger(self):
-        config = load_json(join(os.environ["nnUNet_preprocessed"], self.plans_manager.dataset_name, "nnUNetTrainer.json"))
+
+        # TODO: here add the logging from the TrainManager
+        config = load_json(join(os.environ["nnUNet_preprocessed"], self.plans_manager.dataset_name, "TrainPlans.json"))
 
         if "logger" in config.keys():
             logger_class = recursive_find_python_class(join(nnunetv2.__path__[0], "training", "logging"),
@@ -526,6 +572,12 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
             self.print_to_log_file('These are the global plan.json settings:\n', dct, '\n', add_timestamp=False)
 
     def configure_optimizers(self):
+
+        # TODO give the responsability of this part of code to the train manager!
+        # In this way it will also possible to choose the optimizer.
+        # Keep in mind that all the configuration parameters should be explicitly reported in the 
+        # TrainPlans.json.
+        # Since the 
         optimizer = torch.optim.SGD(self.network.parameters(), self.initial_lr, weight_decay=self.weight_decay,
                                     momentum=0.99, nesterov=True)
         lr_scheduler = PolyLRScheduler(optimizer, self.initial_lr, self.num_epochs)
@@ -979,6 +1031,8 @@ class nnUNetTrainerAdaptive(nnUNetTrainer):
             sys.stdout = old_stdout
 
         empty_cache(self.device)
+
+        self.logger.log_model(self.network, "model")
         self.print_to_log_file("Training done.")
 
     def on_train_epoch_start(self):
