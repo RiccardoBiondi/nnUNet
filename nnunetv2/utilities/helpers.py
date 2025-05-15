@@ -9,6 +9,17 @@ def softmax_helper_dim1(x: torch.Tensor) -> torch.Tensor:
     return torch.softmax(x, 1)
 
 
+def sigmoid_helper(x: torch.Tensor) -> torch.Tensor:
+    return torch.sigmoid(x)
+
+
+def tanh_helper(x: torch.Tensor) -> torch.Tensor:
+    return torch.tan(x)
+
+class DummyClass():
+    pass
+
+
 def empty_cache(device: torch.device):
     if device.type == 'cuda':
         torch.cuda.empty_cache()
